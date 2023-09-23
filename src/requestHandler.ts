@@ -3,8 +3,10 @@ import {
   App,
   CachedMetadata,
   Command,
+  EditorRange,
   PluginManifest,
   prepareSimpleSearch,
+  MarkdownView,
   TFile,
 } from "obsidian";
 import periodicNotes from "obsidian-daily-notes-interface";
@@ -945,6 +947,22 @@ export default class RequestHandler {
     res.json();
   }
 
+  async scrollEditorPositionIntoView(
+    req: express.Request,
+    res: express.Response
+  ): Promise<void> {
+    const { center, range } = req.body as {
+      center?: boolean;
+      range: EditorRange;
+    };
+
+    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const editor = activeView.editor;
+    editor.scrollIntoView(range, center);
+
+    res.json();
+  }
+
   async certificateGet(
     req: express.Request,
     res: express.Response
@@ -1029,6 +1047,10 @@ export default class RequestHandler {
     this.api.route("/search/gui/").post(this.searchGuiPost.bind(this));
 
     this.api.route("/open/(.*)").post(this.openPost.bind(this));
+
+    this.api
+      .route("/editor/scroll-into-view")
+      .post(this.scrollEditorPositionIntoView.bind(this));
 
     this.api.get(`/${CERT_NAME}`, this.certificateGet.bind(this));
     this.api.get("/", this.root.bind(this));
