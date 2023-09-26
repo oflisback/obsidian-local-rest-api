@@ -10,6 +10,7 @@ import {
   TFile,
 } from "obsidian";
 import periodicNotes from "obsidian-daily-notes-interface";
+//@ts-ignore
 import { getAPI as getDataviewAPI } from "obsidian-dataview";
 
 import express from "express";
