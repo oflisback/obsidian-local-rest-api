@@ -13,6 +13,10 @@ import {
   DefaultBindingHost,
   LicenseUrl,
 } from "./constants";
+import {
+  getCertificateIsUptoStandards,
+  getCertificateValidityDays,
+} from "./utils";
 
 export default class LocalRestApi extends Plugin {
   settings: LocalRestApiSettings;
@@ -49,22 +53,56 @@ export default class LocalRestApi extends Plugin {
       expiry.setDate(today.getDate() + 365);
 
       const keypair = forge.pki.rsa.generateKeyPair(2048);
-      const attrs = [{ name: "commonName", value: "Obsidian Local REST API" }];
+      const attrs = [
+        {
+          name: "commonName",
+          value: "Obsidian Local REST API",
+        },
+      ];
       const certificate = forge.pki.createCertificate();
       certificate.setIssuer(attrs);
       certificate.setSubject(attrs);
+
+      const subjectAltNames: Record<string, any>[] = [
+        {
+          type: 7, // IP
+          ip: DefaultBindingHost,
+        },
+      ];
+      if (
+        this.settings.bindingHost &&
+        this.settings.bindingHost !== "0.0.0.0"
+      ) {
+        subjectAltNames.push({
+          type: 7, // IP
+          ip: this.settings.bindingHost,
+        });
+      }
+      if (this.settings.subjectAltNames) {
+        for (const name of this.settings.subjectAltNames.split("\n")) {
+          if (name.trim()) {
+            subjectAltNames.push({
+              type: 2,
+              value: name.trim(),
+            });
+          }
+        }
+      }
+
       certificate.setExtensions([
         {
           name: "basicConstraints",
           cA: true,
+          critical: true,
         },
         {
           name: "keyUsage",
           keyCertSign: true,
           digitalSignature: true,
           nonRepudiation: true,
-          keyEncipherment: true,
-          dataEncipherment: true,
+          keyEncipherment: false,
+          dataEncipherment: false,
+          critical: true,
         },
         {
           name: "extKeyUsage",
@@ -86,12 +124,7 @@ export default class LocalRestApi extends Plugin {
         },
         {
           name: "subjectAltName",
-          altNames: [
-            {
-              type: 7, // IP
-              ip: this.settings.bindingHost ?? DefaultBindingHost,
-            },
-          ],
+          altNames: subjectAltNames,
         },
       ]);
       certificate.serialNumber = "1";
@@ -129,20 +162,25 @@ export default class LocalRestApi extends Plugin {
       this.secureServer.close();
       this.secureServer = null;
     }
-    this.secureServer = https.createServer(
-      { key: this.settings.crypto.privateKey, cert: this.settings.crypto.cert },
-      this.requestHandler.api
-    );
-    this.secureServer.listen(
-      this.settings.port,
-      this.settings.bindingHost ?? DefaultBindingHost
-    );
-
-    console.log(
-      `REST API listening on https://${
+    if (this.settings.enableSecureServer ?? true) {
+      this.secureServer = https.createServer(
+        {
+          key: this.settings.crypto.privateKey,
+          cert: this.settings.crypto.cert,
+        },
+        this.requestHandler.api
+      );
+      this.secureServer.listen(
+        this.settings.port,
         this.settings.bindingHost ?? DefaultBindingHost
-      }:${this.settings.port}/`
-    );
+      );
+
+      console.log(
+        `[REST API] Listening on https://${
+          this.settings.bindingHost ?? DefaultBindingHost
+        }:${this.settings.port}/`
+      );
+    }
 
     if (this.insecureServer) {
       this.insecureServer.close();
@@ -156,7 +194,7 @@ export default class LocalRestApi extends Plugin {
       );
 
       console.log(
-        `REST API listening on http://${
+        `[REST API] Listening on http://${
           this.settings.bindingHost ?? DefaultBindingHost
         }:${this.settings.insecurePort}/`
       );
@@ -183,7 +221,7 @@ export default class LocalRestApi extends Plugin {
 
 class LocalRestApiSettingTab extends PluginSettingTab {
   plugin: LocalRestApi;
-  showAdvancedSettings: boolean = false;
+  showAdvancedSettings = false;
 
   constructor(app: App, plugin: LocalRestApi) {
     super(app, plugin);
@@ -192,6 +230,14 @@ class LocalRestApiSettingTab extends PluginSettingTab {
 
   display(): void {
     const { containerEl } = this;
+
+    const parsedCertificate = forge.pki.certificateFromPem(
+      this.plugin.settings.crypto.cert
+    );
+    const remainingCertificateValidityDays =
+      getCertificateValidityDays(parsedCertificate);
+    const shouldRegenerateCertificate =
+      !getCertificateIsUptoStandards(parsedCertificate);
 
     containerEl.empty();
     containerEl.classList.add("obsidian-local-rest-api-settings");
@@ -229,20 +275,45 @@ class LocalRestApiSettingTab extends PluginSettingTab {
       text: " to use it for validating your connection's security by adding it as a trusted certificate authority in the browser or tool you are using for interacting with this API.",
     });
 
-    new Setting(containerEl)
-      .setName("Encrypted (HTTPS) Server Port")
-      .setDesc(
-        "This configures the port on which your REST API will listen for HTTPS connections.  It is recommended that you leave this port with its default setting as tools integrating with this API may expect the default port to be in use.  Under no circumstances is it recommended that you expose this service directly to the internet."
-      )
-      .addText((cb) =>
-        cb
-          .onChange((value) => {
-            this.plugin.settings.port = parseInt(value, 10);
-            this.plugin.saveSettings();
-            this.plugin.refreshServerState();
-          })
-          .setValue(this.plugin.settings.port.toString())
+    if (remainingCertificateValidityDays < 0) {
+      const expiredCertDiv = apiKeyDiv.createEl("div");
+      expiredCertDiv.classList.add("certificate-expired");
+      expiredCertDiv.innerHTML = `
+        <b>Your certificate has expired!</b>
+        You must re-generate your certificate below by pressing
+        the "Re-generate Certificates" button below in
+        order to connect securely to this API.
+      `;
+    } else if (remainingCertificateValidityDays < 30) {
+      const soonExpiringCertDiv = apiKeyDiv.createEl("div");
+      soonExpiringCertDiv.classList.add("certificate-expiring-soon");
+      soonExpiringCertDiv.innerHTML = `
+        <b>Your certificate will expire in ${Math.floor(
+          remainingCertificateValidityDays
+        )} day${
+        Math.floor(remainingCertificateValidityDays) === 1 ? "" : "s"
+      }s!</b>
+        You should re-generate your certificate below by pressing
+        the "Re-generate Certificates" button below in
+        order to continue to connect securely to this API.
+      `;
+    }
+    if (shouldRegenerateCertificate) {
+      const shouldRegenerateCertificateDiv = apiKeyDiv.createEl("div");
+      shouldRegenerateCertificateDiv.classList.add(
+        "certificate-regeneration-recommended"
       );
+      shouldRegenerateCertificateDiv.innerHTML = `
+        <b>You should re-generate your certificate!</b>
+        Your certificate was generated using earlier standards than
+        are currently used by Obsidian Local REST API. Some systems
+        or tools may not accept your certificate with its current
+        configuration, and re-generating your certificate may
+        improve compatibility with such tools.  To re-generate your
+        certificate, press the "Re-generate Certificates" button
+        below.
+      `;
+    }
 
     new Setting(containerEl)
       .setName("Enable Non-encrypted (HTTP) Server")
@@ -260,28 +331,35 @@ class LocalRestApiSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Non-encrypted (HTTP) Server Port")
-      .addText((cb) =>
-        cb
-          .onChange((value) => {
-            this.plugin.settings.insecurePort = parseInt(value, 10);
-            this.plugin.saveSettings();
-            this.plugin.refreshServerState();
-          })
-          .setValue(this.plugin.settings.insecurePort.toString())
-      );
-
-    new Setting(containerEl)
-      .setName("Reset Cryptography")
+      .setName("Reset All Cryptography")
       .setDesc(
         `Pressing this button will cause your certificate,
-        private and public keys, and API key to be regenerated.`
+        private key, public key, and API key to be regenerated.
+        This settings panel will be closed when you press this.`
       )
       .addButton((cb) => {
         cb.setWarning()
-          .setButtonText("Reset Crypo")
+          .setButtonText("Reset All Crypto")
           .onClick(() => {
             delete this.plugin.settings.apiKey;
+            delete this.plugin.settings.crypto;
+            this.plugin.saveSettings();
+            this.plugin.unload();
+            this.plugin.load();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Re-generate Certificates")
+      .setDesc(
+        `Pressing this button will cause your certificate,
+        private key,  and public key to be re-generated, but your API key will remain unchanged. 
+        This settings panel will be closed when you press this.`
+      )
+      .addButton((cb) => {
+        cb.setWarning()
+          .setButtonText("Re-generate Certificates")
+          .onClick(() => {
             delete this.plugin.settings.crypto;
             this.plugin.saveSettings();
             this.plugin.unload();
@@ -293,7 +371,8 @@ class LocalRestApiSettingTab extends PluginSettingTab {
       .setName("Restore Default Settings")
       .setDesc(
         `Pressing this button will reset this plugin's
-        settings to defaults.`
+        settings to defaults.
+        This settings panel will be closed when you press this.`
       )
       .addButton((cb) => {
         cb.setWarning()
@@ -349,6 +428,52 @@ class LocalRestApiSettingTab extends PluginSettingTab {
       });
       noWarrantee.createEl("span", { text: "." });
 
+      new Setting(containerEl)
+        .setName("Enable Encrypted (HTTPs) Server")
+        .setDesc(
+          `
+          This controls whether the HTTPs server is enabled.  You almost certainly want to leave this switch in its default state ('on'),
+          but may find it useful to turn this switch off for
+          troubleshooting.
+        `
+        )
+        .addToggle((cb) =>
+          cb
+            .onChange((value) => {
+              this.plugin.settings.enableSecureServer = value;
+              this.plugin.saveSettings();
+              this.plugin.refreshServerState();
+            })
+            .setValue(this.plugin.settings.enableSecureServer ?? true)
+        );
+
+      new Setting(containerEl)
+        .setName("Encrypted (HTTPS) Server Port")
+        .setDesc(
+          "This configures the port on which your REST API will listen for HTTPS connections.  It is recommended that you leave this port with its default setting as tools integrating with this API may expect the default port to be in use.  Under no circumstances is it recommended that you expose this service directly to the internet."
+        )
+        .addText((cb) =>
+          cb
+            .onChange((value) => {
+              this.plugin.settings.port = parseInt(value, 10);
+              this.plugin.saveSettings();
+              this.plugin.refreshServerState();
+            })
+            .setValue(this.plugin.settings.port.toString())
+        );
+
+      new Setting(containerEl)
+        .setName("Non-encrypted (HTTP) Server Port")
+        .addText((cb) =>
+          cb
+            .onChange((value) => {
+              this.plugin.settings.insecurePort = parseInt(value, 10);
+              this.plugin.saveSettings();
+              this.plugin.refreshServerState();
+            })
+            .setValue(this.plugin.settings.insecurePort.toString())
+        );
+
       new Setting(containerEl).setName("API Key").addText((cb) => {
         cb.onChange((value) => {
           this.plugin.settings.apiKey = value;
@@ -356,6 +481,28 @@ class LocalRestApiSettingTab extends PluginSettingTab {
           this.plugin.refreshServerState();
         }).setValue(this.plugin.settings.apiKey);
       });
+      new Setting(containerEl)
+        .setName("Certificate Hostnames")
+        .setDesc(
+          `
+          List of extra hostnames to add
+          to your certificate's \`subjectAltName\` field.
+          One hostname per line.
+          You must click the "Re-generate Certificates" button above after changing this value
+          for this to have an effect.  This is useful for
+          situations in which you are accessing Obsidian
+          from a hostname other than the host on which
+          it is running.
+      `
+        )
+        .addTextArea((cb) =>
+          cb
+            .onChange((value) => {
+              this.plugin.settings.subjectAltNames = value;
+              this.plugin.saveSettings();
+            })
+            .setValue(this.plugin.settings.subjectAltNames)
+        );
       new Setting(containerEl).setName("Certificate").addTextArea((cb) =>
         cb
           .onChange((value) => {

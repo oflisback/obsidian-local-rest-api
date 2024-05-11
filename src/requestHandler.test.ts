@@ -96,7 +96,7 @@ describe("requestHandler", () => {
     test("withhout auth", async () => {
       const result = await request(server).get(certPath).expect(200);
 
-      expect(result.body.toString()).toEqual(settings.crypto.cert);
+      expect(result.body.toString()).toEqual(settings.crypto?.cert);
     });
 
     test("with auth", async () => {
@@ -221,6 +221,31 @@ describe("requestHandler", () => {
         arbitraryFilePath,
         arbitraryBytes,
       ]);
+    });
+
+    test("acceptable binary content", async () => {
+      const arbitraryFilePath = "test.png";
+      const arbitraryBytes = "bytes"; // mock a picture binary
+
+      await request(server)
+        .put(`/vault/${arbitraryFilePath}`)
+        .set("Content-Type", "image/jpeg")
+        .set("Authorization", `Bearer ${API_KEY}`)
+        .send(arbitraryBytes)
+        .expect(204);
+
+      expect(app.vault.adapter._writeBinary[0]).toEqual(arbitraryFilePath);
+      const data = app.vault.adapter._writeBinary[1];
+      expect(Buffer.isBuffer(data) || data instanceof ArrayBuffer).toEqual(
+        true
+      );
+      // We won't be able to convert the incoming data
+      // to bytes with this mechanism in a _normal_
+      // situation because those bytes won't be encodable
+      // as ASCII, but we can do this here because we're
+      // lying about the incoming content type above
+      const decoder = new TextDecoder();
+      expect(decoder.decode(data)).toEqual(arbitraryBytes);
     });
 
     test("non-bytes content", async () => {
@@ -555,23 +580,24 @@ describe("requestHandler", () => {
         const arbitraryBytes = "bytes";
         const arbitraryHeading = "Heading1";
 
-        const arbitraryExistingBytes = "something\n\n# Heading1\ncontent here\n# Heading2\nsomething";
+        const arbitraryExistingBytes =
+          "something\n\n# Heading1\ncontent here\n# Heading2\nsomething";
         app.vault._read = arbitraryExistingBytes;
 
         // Heading 1
         let headingCache = new HeadingCache();
         headingCache.heading = arbitraryHeading;
 
-        headingCache.position.end.line = 2
-        headingCache.position.start.line = 2
+        headingCache.position.end.line = 2;
+        headingCache.position.start.line = 2;
         app.metadataCache._getFileCache.headings.push(headingCache);
 
         // Heading 2
         headingCache = new HeadingCache();
         headingCache.heading = "Heading2";
 
-        headingCache.position.end.line = 4
-        headingCache.position.start.line = 4
+        headingCache.position.end.line = 4;
+        headingCache.position.start.line = 4;
         app.metadataCache._getFileCache.headings.push(headingCache);
 
         const result = await request(server)
@@ -585,7 +611,9 @@ describe("requestHandler", () => {
 
         expect(app.vault.adapter.write).toBeTruthy();
         expect(result.text).toBeTruthy();
-        expect(result.text).toEqual("something\n\n# Heading1\nbytes\ncontent here\n# Heading2\nsomething");
+        expect(result.text).toEqual(
+          "something\n\n# Heading1\nbytes\ncontent here\n# Heading2\nsomething"
+        );
       });
 
       test("end content-insertion-position with header", async () => {
@@ -593,23 +621,24 @@ describe("requestHandler", () => {
         const arbitraryBytes = "bytes";
         const arbitraryHeading = "Heading1";
 
-        const arbitraryExistingBytes = "something\n\n# Heading1\ncontent here\n# Heading2\nsomething";
+        const arbitraryExistingBytes =
+          "something\n\n# Heading1\ncontent here\n# Heading2\nsomething";
         app.vault._read = arbitraryExistingBytes;
 
         // Heading 1
         let headingCache = new HeadingCache();
         headingCache.heading = arbitraryHeading;
 
-        headingCache.position.end.line = 2
-        headingCache.position.start.line = 2
+        headingCache.position.end.line = 2;
+        headingCache.position.start.line = 2;
         app.metadataCache._getFileCache.headings.push(headingCache);
 
         // Heading 2
         headingCache = new HeadingCache();
         headingCache.heading = "Heading2";
 
-        headingCache.position.end.line = 4
-        headingCache.position.start.line = 4
+        headingCache.position.end.line = 4;
+        headingCache.position.start.line = 4;
         app.metadataCache._getFileCache.headings.push(headingCache);
 
         const result = await request(server)
@@ -623,7 +652,9 @@ describe("requestHandler", () => {
 
         expect(app.vault.adapter.write).toBeTruthy();
         expect(result.text).toBeTruthy();
-        expect(result.text).toEqual("something\n\n# Heading1\ncontent here\nbytes\n# Heading2\nsomething");
+        expect(result.text).toEqual(
+          "something\n\n# Heading1\ncontent here\nbytes\n# Heading2\nsomething"
+        );
       });
 
       test("end content-insertion-position with header (new lines at end of header block)", async () => {
@@ -631,23 +662,24 @@ describe("requestHandler", () => {
         const arbitraryBytes = "bytes";
         const arbitraryHeading = "Heading1";
 
-        const arbitraryExistingBytes = "something\n\n# Heading1\ncontent here\n\n\n# Heading2\nsomething";
+        const arbitraryExistingBytes =
+          "something\n\n# Heading1\ncontent here\n\n\n# Heading2\nsomething";
         app.vault._read = arbitraryExistingBytes;
 
         // Heading 1
         let headingCache = new HeadingCache();
         headingCache.heading = arbitraryHeading;
 
-        headingCache.position.end.line = 2
-        headingCache.position.start.line = 2
+        headingCache.position.end.line = 2;
+        headingCache.position.start.line = 2;
         app.metadataCache._getFileCache.headings.push(headingCache);
 
         // Heading 2
         headingCache = new HeadingCache();
         headingCache.heading = "Heading2";
 
-        headingCache.position.end.line = 6
-        headingCache.position.start.line = 6
+        headingCache.position.end.line = 6;
+        headingCache.position.start.line = 6;
         app.metadataCache._getFileCache.headings.push(headingCache);
 
         const result = await request(server)
@@ -661,7 +693,9 @@ describe("requestHandler", () => {
 
         expect(app.vault.adapter.write).toBeTruthy();
         expect(result.text).toBeTruthy();
-        expect(result.text).toEqual("something\n\n# Heading1\ncontent here\n\n\nbytes\n# Heading2\nsomething");
+        expect(result.text).toEqual(
+          "something\n\n# Heading1\ncontent here\n\n\nbytes\n# Heading2\nsomething"
+        );
       });
 
       test("end content-insertion-position with header ignore newlines", async () => {
@@ -669,23 +703,24 @@ describe("requestHandler", () => {
         const arbitraryBytes = "bytes";
         const arbitraryHeading = "Heading1";
 
-        const arbitraryExistingBytes = "something\n\n# Heading1\ncontent here\n\n\n# Heading2\nsomething";
+        const arbitraryExistingBytes =
+          "something\n\n# Heading1\ncontent here\n\n\n# Heading2\nsomething";
         app.vault._read = arbitraryExistingBytes;
 
         // Heading 1
         let headingCache = new HeadingCache();
         headingCache.heading = arbitraryHeading;
 
-        headingCache.position.end.line = 2
-        headingCache.position.start.line = 2
+        headingCache.position.end.line = 2;
+        headingCache.position.start.line = 2;
         app.metadataCache._getFileCache.headings.push(headingCache);
 
         // Heading 2
         headingCache = new HeadingCache();
         headingCache.heading = "Heading2";
 
-        headingCache.position.end.line = 6
-        headingCache.position.start.line = 6
+        headingCache.position.end.line = 6;
+        headingCache.position.start.line = 6;
         app.metadataCache._getFileCache.headings.push(headingCache);
 
         const result = await request(server)
@@ -700,7 +735,9 @@ describe("requestHandler", () => {
 
         expect(app.vault.adapter.write).toBeTruthy();
         expect(result.text).toBeTruthy();
-        expect(result.text).toEqual("something\n\n# Heading1\ncontent here\nbytes\n\n\n# Heading2\nsomething");
+        expect(result.text).toEqual(
+          "something\n\n# Heading1\ncontent here\nbytes\n\n\n# Heading2\nsomething"
+        );
       });
     });
   });

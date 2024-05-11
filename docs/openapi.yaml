@@ -9,16 +9,24 @@ info:
     When using this tool you may see browser security warnings due to your browser not trusting the self-signed certificate the plugin will generate on its first run.  If you do, you can make those errors disappear by adding the certificate as a "Trusted Certificate" in your browser or operating system's settings.
   version: '1.0'
 servers:
-  - url: https://127.0.0.1:{port}
+  - url: https://{host}:{port}
     description: "HTTPS (Secure Mode)"
     variables:
       port:
         default: '27124'
-  - url: http://127.0.0.1:{port}
+        description: 'HTTPS port'
+      host:
+        default: '127.0.0.1'
+        description: 'Binding host'
+  - url: http://{host}:{port}
     description: "HTTP (Insecure Mode)"
     variables:
       port:
         default: '27123'
+        description: 'HTTP port'
+      host:
+        default: '127.0.0.1'
+        description: 'Binding host'
 components:
   securitySchemes:
     apiKeyAuth:
@@ -1031,74 +1039,6 @@ paths:
                       description: Path to the matching file
                     score:
                       type: number
-                    matches:
-                      type: array
-                      items:
-                        type: object
-                        required:
-                        - "match"
-                        - "context"
-                        properties:
-                          match:
-                            type: object
-                            required:
-                            - "start"
-                            - "end"
-                            properties:
-                              start:
-                                type: number
-                              end:
-                                type: number
-                          context:
-                            type: string
-  /search/gui/:
-    post:
-      tags: ["Search"]
-      summary: |
-        Search for documents matching a specified gui-evaluated query
-      description: |
-        Uses the search functionality built into the Obsidian UI to find matching files.
-
-        **Note**: Unlike most other functionality in this library, this particular method relies on interacting with the UI directly rather than interacting with your notes behind-the-scenes; so you will see the search panel open when sending requests to this API.  As far as the developers of this library are aware, this is unavoidable.
-      parameters:
-      - name: query
-        in: query
-        description: |
-          Your search query. Search options include:
-
-          - path: match the path of a file
-          - file: match file name
-          - tag: search for tags
-          - line:() search for keywords on the same line
-          - section: search for keywords under the same heading
-
-          See the search field in the Obsidian UI
-          for a better understanding of what options are available.
-        required: true
-        schema:
-          type: string
-      - name: contextLength
-        in: query
-        description: How much context to return around the matching string
-        required: false
-        schema:
-          type: number
-          default: 100
-      responses:
-        '200':
-          description: Success
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  required:
-                  - "filename"
-                  properties:
-                    filename:
-                      type: string
-                      description: Path to the matching file
                     matches:
                       type: array
                       items:

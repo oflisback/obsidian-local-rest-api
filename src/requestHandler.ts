@@ -12,6 +12,7 @@ import {
 import periodicNotes from "obsidian-daily-notes-interface";
 //@ts-ignore
 import { getAPI as getDataviewAPI } from "obsidian-dataview";
+import forge from "node-forge";
 
 import express from "express";
 import http from "http";
@@ -35,8 +36,19 @@ import {
   SearchJsonResponseItem,
   SearchResponseItem,
 } from "./types";
-import { findHeadingBoundary, getSplicePosition } from "./utils";
-import { CERT_NAME, ContentTypes, ERROR_CODE_MESSAGES } from "./constants";
+import {
+  findHeadingBoundary,
+  getCertificateIsUptoStandards,
+  getCertificateValidityDays,
+  getSplicePosition,
+  toArrayBuffer,
+} from "./utils";
+import {
+  CERT_NAME,
+  ContentTypes,
+  ERROR_CODE_MESSAGES,
+  MaximumRequestSize,
+} from "./constants";
 
 export default class RequestHandler {
   app: App;
@@ -123,7 +135,10 @@ export default class RequestHandler {
       ? frontmatter.tags
       : [];
     const filteredTags: string[] = [...frontmatterTags, ...directTags]
-      .map((tag) => tag.replace(/^#/, ""))
+      // Strip leading hash and get tag's string representation --
+      // although it should always be a string, it apparently isn't always!
+      .map((tag) => tag.toString().replace(/^#/, ""))
+      // Remove duplicates
       .filter((value, index, self) => self.indexOf(value) === index);
 
     return {
@@ -140,7 +155,7 @@ export default class RequestHandler {
     message,
     errorCode,
   }: ErrorResponseDescriptor): string {
-    let errorMessages: string[] = [];
+    const errorMessages: string[] = [];
     if (errorCode) {
       errorMessages.push(ERROR_CODE_MESSAGES[errorCode]);
     } else {
@@ -173,6 +188,13 @@ export default class RequestHandler {
   }
 
   root(req: express.Request, res: express.Response): void {
+    let certificate: forge.pki.Certificate | undefined;
+    try {
+      certificate = forge.pki.certificateFromPem(this.settings.crypto.cert);
+    } catch (e) {
+      // This is fine, we just won't include that in the output
+    }
+
     res.status(200).json({
       status: "OK",
       versions: {
@@ -181,6 +203,14 @@ export default class RequestHandler {
       },
       service: "Obsidian Local REST API",
       authenticated: this.requestIsAuthenticated(req),
+      certificateInfo:
+        this.requestIsAuthenticated(req) && certificate
+          ? {
+              validityDays: getCertificateValidityDays(certificate),
+              regenerateRecommended:
+                !getCertificateIsUptoStandards(certificate),
+            }
+          : undefined,
     });
   }
 
@@ -268,20 +298,20 @@ export default class RequestHandler {
       return;
     }
 
-    if (typeof req.body != "string") {
-      this.returnCannedResponse(res, {
-        errorCode: ErrorCode.TextOrByteContentEncodingRequired,
-      });
-      return;
-    }
-
     try {
       await this.app.vault.createFolder(path.dirname(filepath));
     } catch {
       // the folder/file already exists, but we don't care
     }
 
-    await this.app.vault.adapter.write(filepath, req.body);
+    if (typeof req.body === "string") {
+      await this.app.vault.adapter.write(filepath, req.body);
+    } else {
+      await this.app.vault.adapter.writeBinary(
+        filepath,
+        toArrayBuffer(req.body)
+      );
+    }
 
     this.returnCannedResponse(res, { statusCode: 204 });
     return;
@@ -326,13 +356,14 @@ export default class RequestHandler {
     }
     if (typeof req.body != "string") {
       this.returnCannedResponse(res, {
-        errorCode: ErrorCode.TextOrByteContentEncodingRequired,
+        errorCode: ErrorCode.TextContentEncodingRequired,
       });
       return;
     }
 
     if (typeof req.get("Content-Insertion-Ignore-Newline") == "string") {
-      aboveNewLine = (req.get("Content-Insertion-Ignore-Newline").toLowerCase() == "true")
+      aboveNewLine =
+        req.get("Content-Insertion-Ignore-Newline").toLowerCase() == "true";
     }
 
     if (!heading.length) {
@@ -362,13 +393,14 @@ export default class RequestHandler {
     const fileContents = await this.app.vault.read(file);
     const fileLines = fileContents.split("\n");
 
-    const splicePosition = getSplicePosition(fileLines, position, insert, aboveNewLine)
-
-    fileLines.splice(
-      splicePosition,
-      0,
-      req.body
+    const splicePosition = getSplicePosition(
+      fileLines,
+      position,
+      insert,
+      aboveNewLine
     );
+
+    fileLines.splice(splicePosition, 0, req.body);
 
     const content = fileLines.join("\n");
 
@@ -397,7 +429,7 @@ export default class RequestHandler {
 
     if (typeof req.body != "string") {
       this.returnCannedResponse(res, {
-        errorCode: ErrorCode.TextOrByteContentEncodingRequired,
+        errorCode: ErrorCode.TextContentEncodingRequired,
       });
       return;
     }
@@ -537,7 +569,8 @@ export default class RequestHandler {
   async periodicGetOrCreateNote(
     periodName: string
   ): Promise<[TFile | null, ErrorCode | null]> {
-    let [file, err] = this.periodicGetNote(periodName);
+    const [gottenFile, err] = this.periodicGetNote(periodName);
+    let file = gottenFile;
     if (err === ErrorCode.PeriodicNoteDoesNotExist) {
       const [period] = this.periodicGetInterface(periodName);
       const now = (window as any).moment(Date.now());
@@ -784,64 +817,6 @@ export default class RequestHandler {
     res.json(results);
   }
 
-  async searchGuiPost(
-    req: express.Request,
-    res: express.Response
-  ): Promise<void> {
-    const results: SearchResponseItem[] = [];
-    const query: string = req.query.query as string;
-    const contextLength: number =
-      parseInt(req.query.contextLength as string, 10) ?? 100;
-
-    // Open the search panel and start a search
-    this.app.internalPlugins
-      // @ts-ignore
-      .getPluginById("global-search")
-      .instance.openGlobalSearch(query);
-    const searchDom =
-      // @ts-ignore
-      this.app.workspace.getLeavesOfType("search")[0].view.dom;
-
-    // Wait until the search is complete in the UI
-    await new Promise<void>((resolve) => {
-      setTimeout(() => {
-        if (!searchDom.working) {
-          resolve();
-          return;
-        }
-        const interval = setInterval(() => {
-          if (!searchDom.working) {
-            clearInterval(interval);
-            resolve();
-          }
-        }, 2000);
-      }, 100);
-    });
-
-    for (const result of searchDom.children) {
-      const matches: SearchContext[] = [];
-      for (const match of result.result.content) {
-        matches.push({
-          match: {
-            start: match[0],
-            end: match[1],
-          },
-          context: result.content.slice(
-            Math.max(match[0] - contextLength, 0),
-            match[1] + contextLength
-          ),
-        });
-      }
-
-      results.push({
-        filename: result.file.path,
-        matches,
-      });
-    }
-
-    res.json(results);
-  }
-
   valueIsSaneTruthy(value: unknown): boolean {
     if (value === undefined || value === null) {
       return false;
@@ -941,7 +916,7 @@ export default class RequestHandler {
     const query = queryString.parseUrl(req.originalUrl, {
       parseBooleans: true,
     }).query;
-    const newLeaf: boolean = Boolean(query.newLeaf);
+    const newLeaf = Boolean(query.newLeaf);
 
     this.app.workspace.openLinkText(path, "/", newLeaf);
 
@@ -1006,15 +981,43 @@ export default class RequestHandler {
   }
 
   setupRouter() {
+    this.api.use((req, res, next) => {
+      const originalSend = res.send;
+      res.send = function (body, ...args) {
+        console.log(`[REST API] ${req.method} ${req.url} => ${res.statusCode}`);
+
+        return originalSend.apply(res, [body, ...args]);
+      };
+      next();
+    });
     this.api.use(responseTime());
     this.api.use(cors());
     this.api.use(this.authenticationMiddleware.bind(this));
-    this.api.use(bodyParser.text({ type: "text/*" }));
-    this.api.use(bodyParser.text({ type: ContentTypes.dataviewDql }));
-    this.api.use(bodyParser.json({ type: ContentTypes.json }));
-    this.api.use(bodyParser.json({ type: ContentTypes.olrapiNoteJson }));
-    this.api.use(bodyParser.json({ type: ContentTypes.jsonLogic }));
-    this.api.use(bodyParser.raw({ type: "application/*" }));
+    this.api.use(
+      bodyParser.text({ type: "text/*", limit: MaximumRequestSize })
+    );
+    this.api.use(
+      bodyParser.text({
+        type: ContentTypes.dataviewDql,
+        limit: MaximumRequestSize,
+      })
+    );
+    this.api.use(
+      bodyParser.json({ type: ContentTypes.json, limit: MaximumRequestSize })
+    );
+    this.api.use(
+      bodyParser.json({
+        type: ContentTypes.olrapiNoteJson,
+        limit: MaximumRequestSize,
+      })
+    );
+    this.api.use(
+      bodyParser.json({
+        type: ContentTypes.jsonLogic,
+        limit: MaximumRequestSize,
+      })
+    );
+    this.api.use(bodyParser.raw({ type: "*/*", limit: MaximumRequestSize }));
 
     this.api
       .route("/active/")
@@ -1045,7 +1048,6 @@ export default class RequestHandler {
 
     this.api.route("/search/").post(this.searchQueryPost.bind(this));
     this.api.route("/search/simple/").post(this.searchSimplePost.bind(this));
-    this.api.route("/search/gui/").post(this.searchGuiPost.bind(this));
 
     this.api.route("/open/(.*)").post(this.openPost.bind(this));
 

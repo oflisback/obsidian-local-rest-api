@@ -3,7 +3,7 @@ import { FileStats, Loc, TFile } from "obsidian";
 import { IPeriodicNoteSettings } from "obsidian-daily-notes-interface";
 
 export enum ErrorCode {
-  TextOrByteContentEncodingRequired = 40010,
+  TextContentEncodingRequired = 40010,
   ContentTypeSpecificationRequired = 40011,
   InvalidContentForContentType = 40015,
   InvalidContentInsertionPositionValue = 40050,
@@ -27,9 +27,11 @@ export interface LocalRestApiSettings {
   port: number;
   insecurePort: number;
   enableInsecureServer: boolean;
+  enableSecureServer?: boolean;
 
   authorizationHeaderName?: string;
   bindingHost?: string;
+  subjectAltNames?: string;
 }
 
 export interface HeadingBoundary {
